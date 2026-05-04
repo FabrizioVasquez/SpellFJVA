@@ -130,61 +130,98 @@ async def ir_siguiente_pagina(page) -> bool:
 # ============================================================
 # BLOQUE 3: Scraping principal con Playwright
 # ============================================================
-def guardar_csv(data: list, file_count: int) -> str:
-    output_file = os.path.join(OUTPUT_DIR, f"{FILE_PREFIX}_{file_count}.csv")
-    df = pd.DataFrame(data)
-    df.to_csv(output_file, index=False, header=False)
-    logging.info(f"Guardadas {len(data)} filas en {output_file}")
-    return output_file
+async def main():
+    data        = []
+    table_count = 0
+    file_count  = 1
 
+    log_block("Iniciando extracción con Playwright (async)")
 
-async def extraer_tabla(page) -> list:
-    """Extrae filas visibles de tabla#stdregistro en la página actual."""
-    rows = await page.query_selector_all("table#stdregistro tbody tr")
-    table_data = []
-    for row in rows:
-        cols = await row.query_selector_all("td")
-        cells = [await col.inner_text() for col in cols]
-        table_data.append([c.strip() for c in cells])
-    return table_data
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+            ]
+        )
+        context = await browser.new_context()
+        page    = await context.new_page()
+        page.set_default_timeout(TIMEOUT_MS)
 
-
-async def ir_siguiente_pagina(page) -> bool:
-    """
-    Intenta hacer click en el botón siguiente página.
-    Retorna True si tuvo éxito, False si no hay más páginas o agotó reintentos.
-    """
-    for attempt in range(1, MAX_RETRIES + 1):
         try:
-            next_btn = await page.query_selector(
-                "input#ImgBtnSiguiente, img#ImgBtnSiguiente"
+            # --- Navegar ---
+            log_block("Navegando a la URL")
+            await page.goto(
+                URL,
+                wait_until="domcontentloaded",
+                timeout=PAGE_LOAD_TIMEOUT_MS
             )
-            if next_btn is None:
-                logging.info("Botón 'Siguiente' no encontrado. Fin de paginación.")
-                return False
+            logging.info(f"Página cargada: {URL}")
 
-            is_disabled = await next_btn.get_attribute("disabled")
-            if is_disabled is not None:
-                logging.info("Botón 'Siguiente' deshabilitado. Última página alcanzada.")
-                return False
+            # --- Dropdown ---
+            log_block("Configurando filtros")
+            await page.wait_for_selector("#ddllistado", timeout=TIMEOUT_MS)
+            await page.select_option("#ddllistado", label="Listados Todas")
+            logging.info("Dropdown → 'Listados Todas' seleccionado")
 
-            await next_btn.click()
+            # --- Buscar ---
+            await page.wait_for_selector("#btnBuscar", timeout=TIMEOUT_MS)
+            await page.click("#btnBuscar")
+            logging.info("Click en #btnBuscar")
+
+            # --- Esperar tabla ---
             await page.wait_for_selector(
-                "table#stdregistro tbody tr",
-                timeout=TIMEOUT_MS
+                "table#stdregistro",
+                timeout=PAGE_LOAD_TIMEOUT_MS
             )
-            await asyncio.sleep(2)
-            return True
+            logging.info("Tabla #stdregistro detectada. Iniciando extracción...")
+            log_block("Extracción de datos iniciada")
 
-        except PlaywrightTimeoutError:
-            logging.warning(f"Timeout navegando a siguiente página. Intento {attempt}/{MAX_RETRIES}")
-            await asyncio.sleep(5)
-        except Exception as e:
-            logging.warning(f"Error al ir a siguiente página: {e}. Intento {attempt}/{MAX_RETRIES}")
-            await asyncio.sleep(5)
+            # --- Loop de paginación ---
+            while True:
+                try:
+                    table_data = await extraer_tabla(page)
 
-    logging.error("No se pudo continuar a la siguiente página tras reintentos.")
-    return False
+                    if table_data:
+                        data.extend(table_data)
+                        table_count += 1
+                        logging.info(
+                            f"Página {table_count} procesada "
+                            f"— {len(table_data)} filas extraídas"
+                        )
+                    else:
+                        logging.warning(
+                            f"Página {table_count + 1}: tabla vacía, se omite."
+                        )
+
+                    if table_count >= CHUNK_PAGES:
+                        guardar_csv(data, file_count)
+                        data.clear()
+                        table_count = 0
+                        file_count += 1
+
+                    hay_siguiente = await ir_siguiente_pagina(page)
+                    if not hay_siguiente:
+                        break
+
+                except Exception as e:
+                    logging.error(f"Error durante la extracción: {e}")
+                    break
+
+        finally:
+            if data:
+                guardar_csv(data, file_count)
+            await browser.close()
+            log_block("Extracción finalizada")
+            logging.info(f"Datos guardados en: {OUTPUT_DIR}")
+
+
+# --- Entry point para Databricks ---
+# Databricks ya tiene un event loop activo, por eso NO se usa asyncio.run()
+# sino await directamente sobre la corutina
+await main()
 
 # ============================================================
 # BLOQUE 4: Verificación rápida de archivos generados
