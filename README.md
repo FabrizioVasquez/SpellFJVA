@@ -1,5 +1,55 @@
 # SpellFJVA
+Semaforo_Nuevo = 
+VAR val = AVERAGE(Fact_metricas[VALOR])
+VAR ind = SELECTEDVALUE(Fact_metricas[INDICADOR])
 
+VAR dir = 
+    CALCULATE(
+        MAX(Dim_umbrales[DIRECCION]),
+        Dim_umbrales[INDICADOR] = ind
+    )
+
+-- Para ASCENDENTES (malo si sube: PEPs, Clientes Sensibles, etc.)
+
+VAR v_max_asc = 
+    CALCULATE(
+        MAX(Dim_umbrales[V_MAX]),
+        Dim_umbrales[INDICADOR] = ind
+    )
+VAR a_max_asc = 
+    CALCULATE(
+        MAX(Dim_umbrales[A_MAX]),
+        Dim_umbrales[INDICADOR] = ind
+    )
+
+-- Para DESCENDENTES (malo si baja: Actividades Bajo Riesgo)
+VAR v_min_desc = 
+    CALCULATE(
+        MAX(Dim_umbrales[V_MIN]),
+        Dim_umbrales[INDICADOR] = ind
+    )
+VAR a_min_desc = 
+    CALCULATE(
+        MAX(Dim_umbrales[A_MIN]),
+        Dim_umbrales[INDICADOR] = ind
+    )
+
+RETURN
+    IF(dir = "ASCENDENTE",
+        -- Verde: val <= v_max
+        -- Amarillo: v_max < val <= a_max  
+        -- Rojo: val > a_max
+        IF(val <= v_max_asc, 1,
+        IF(val <= a_max_asc, 2, 3)),
+
+        -- DESCENDENTE:
+        -- Verde: val >= v_min (ej: >= 92.3%)
+        -- Amarillo: a_min <= val < v_min (ej: 88.4% a 92.3%)
+        -- Rojo: val < a_min (ej: < 88.4%)
+        IF(val >= v_min_desc, 1,
+        IF(val >= a_min_desc, 2, 3))
+    )
+    
 ```python
 # ============================================================
 # BLOQUE 0: Instalación de dependencias en Databricks
